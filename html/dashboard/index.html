@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.1/dist/chart.min.js"></script>
+    <style>
+        body {
+            background: #0d1117;
+            color: #c9d1d9;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+        }
+        .card-header {
+            background: #21262d;
+            border-bottom: 1px solid #30363d;
+            color: #58a6ff;
+            font-weight: 600;
+        }
+        .btn-primary {
+            background: #238636;
+            border: 1px solid rgba(240, 246, 252, 0.1);
+        }
+        .btn-primary:hover {
+            background: #2ea043;
+        }
+        .stats-box {
+            text-align: center;
+            padding: 1rem;
+        }
+        .stats-box .value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        }
+        .stats-box .label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            color: #8b949e;
+            letter-spacing: 0.05em;
+        }
+        .stat-power .value { color: #f85149; }
+        .stat-current .value { color: #3fb950; }
+        .stat-bus-voltage .value { color: #58a6ff; }
+        #chart-container {
+            position: relative;
+            height: 450px;
+        }
+        footer {
+            text-align: center;
+            padding: 2rem 0;
+            color: #484f58;
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+ 
+<div class="container py-4">
+    <header class="d-flex justify-content-between align-items-center mb-4">
+        <h1 class="h3 mb-0">
+            <span style="color: #58a6ff;">&#9679;</span>
+            Fridge Stats Dashboard
+        </h1>
+        <div>
+            <span class="badge bg-success" id="connection-status">Connected</span>
+            <span class="badge bg-secondary" id="reading-count">0 readings</span>
+        </div>
+    </header>
+ 
+    <div class="row g-3 mb-4" id="live-stats">
+        <div class="col-md-4">
+            <div class="card stats-box stat-power">
+                <div class="label">Power</div>
+                <div class="value" id="val-power">--</div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card stats-box stat-current">
+                <div class="label">Current</div>
+                <div class="value" id="val-current">--</div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card stats-box stat-bus-voltage">
+                <div class="label">Bus Voltage</div>
+                <div class="value" id="val-bus-voltage">--</div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card stats-box stat-measurement-date">
+                <div class="label">Measurement Date</div>
+                <div class="value" id="val-measurement-date">--</div>
+            </div>
+        </div>
+    </div>
+ 
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span>Usage Over Time</span>
+            <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-secondary" id="btn-1d">1 Day</button>
+                <button class="btn btn-sm btn-outline-secondary" id="btn-5d">5 Days</button>
+                <button class="btn btn-sm btn-outline-secondary" id="btn-30d">30 Days</button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div id="chart-container">
+                <canvas id="fridge-stats-chart"></canvas>
+            </div>
+        </div>
+    </div>
+ 
+    <div class="card mb-4">
+        <div class="card-header">Custom Date Range</div>
+        <div class="card-body">
+            <form id="date-range-form" class="row g-3 align-items-end">
+                <div class="col-md-4">
+                    <label for="from-date" class="form-label">From</label>
+                    <input type="datetime-local" class="form-control form-control-sm" id="from-date" required>
+                </div>
+                <div class="col-md-4">
+                    <label for="to-date" class="form-label">To</label>
+                    <input type="datetime-local" class="form-control form-control-sm" id="to-date" required>
+                </div>
+                <div class="col-md-4 d-grid">
+                    <button type="submit" class="btn btn-primary btn-sm">Apply Range</button>
+                </div>
+            </form>
+            <div id="date-range-error" class="text-danger mt-2 d-none"></div>
+        </div>
+    </div>
+</div>
+ 
+<footer>
+    Raspberry Pi &middot; PHP API &middot; Chart.js &middot; MMA8452Q Fridge Stats
+</footer>
+ 
+<script>
+const API_BASE = '../api/api.php';
+ 
+const chart = new Chart(document.getElementById('fridge-stats-chart'), {
+    type: 'line',
+    data: {
+        labels: [],
+        datasets: [
+            {
+                label: 'Power',
+                data: [],
+                borderColor: '#f85149',
+                backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.2,
+                fill: false,
+                yAxisID: 'y1',
+            },
+            {
+                label: 'Current',
+                data: [],
+                borderColor: '#3fb950',
+                backgroundColor: 'rgba(63, 185, 80, 0.1)',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.2,
+                fill: false,
+                yAxisID: 'y2',
+            },
+            {
+                label: 'Bus Voltage',
+                data: [],
+                borderColor: '#58a6ff',
+                backgroundColor: 'rgba(88, 166, 255, 0.1)',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.2,
+                fill: false,
+                yAxisID: 'y3',
+            },
+        ],
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: {
+            duration: 300,
+        },
+        interaction: {
+            intersect: false,
+            mode: 'index',
+        },
+        plugins: {
+            legend: {
+                labels: {
+                    color: '#c9d1d9',
+                    usePointStyle: true,
+                    pointStyle: 'circle',
+                },
+            },
+            tooltip: {
+                backgroundColor: '#161b22',
+                titleColor: '#c9d1d9',
+                bodyColor: '#8b949e',
+                borderColor: '#30363d',
+                borderWidth: 1,
+                padding: 10,
+                callbacks: {
+                    label: function (ctx) {
+                        return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(3) + ' g';
+                    },
+                },
+            },
+        },
+        scales: {
+            y1: {
+                type: 'linear',
+                display: true,
+                suggestedMin: 20,
+                suggestedMax: 200,
+                ticks: {
+                    color: '#8b949e',
+                },
+                grid: {
+                    display: false,
+                    color: 'rgba(48, 54, 61, 0.5)',
+                },
+                title: {
+                    display: true,
+                    text: 'Power (W)',
+                    color: 'rgba(248, 81, 73, 1)',
+                },
+            },
+            y2: {
+                type: 'linear',
+                display: true,
+                suggestedMin: 1,
+                suggestedMax: 20,
+                ticks: {
+                    color: '#8b949e',
+                },
+                grid: {
+                    display: false,
+                    color: 'rgba(48, 54, 61, 0.5)',
+                },
+                title: {
+                    display: true,
+                    text: 'Current (A)',
+                    color: 'rgba(63, 185, 80, 1)',
+                },
+            },
+            y3: {
+                type: 'linear',
+                display: true,
+                suggestedMin: 11,
+                suggestedMax: 15,
+                ticks: {
+                    color: '#8b949e',
+                },
+                grid: {
+                    display: false,
+                    color: 'rgba(48, 54, 61, 0.5)',
+                },
+                title: {
+                    display: true,
+                    text: 'Bus Voltage (V)',
+                    color: 'rgba(88, 166, 255, 1)',
+                },
+            },
+        },
+    },
+});
+ 
+let currentLimit = 100;
+let refreshInterval = null;
+const REFRESH_MS = 5000;
+ 
+async function fetchData(endpoint) {
+    const url = API_BASE + '/' + endpoint;
+    const res = await fetch(url);
+    if (!res.ok) {
+        throw new Error('API returned ' + res.status);
+    }
+    return res.json();
+}
+ 
+function updateChart(data) {
+    const labels = data.map(r => {
+        const d = new Date(r.measurement_date + 'Z');
+        return d.toLocaleString("en-US", {
+            timeStyle: "short",
+            dateStyle: "short",
+            hour12: false,
+        });
+    });
+ 
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = data.map(r => r.power);
+    chart.data.datasets[1].data = data.map(r => r.current);
+    chart.data.datasets[2].data = data.map(r => r.bus_voltage);
+    chart.update('none');
+ 
+    document.getElementById('reading-count').textContent =
+        data.length + ' readings';
+}
+ 
+function updateLiveStats(data) {
+    if (data.length === 0) return;
+    const last = data[data.length - 1];
+    document.getElementById('val-power').textContent = parseFloat(last.power).toFixed(3);
+    document.getElementById('val-current').textContent = parseFloat(last.current).toFixed(3);
+    document.getElementById('val-bus-voltage').textContent = parseFloat(last.bus_voltage).toFixed(3);
+    document.getElementById('val-measurement-date').textContent = new Date(last.measurement_date + 'Z').toLocaleString();}
+ 
+async function loadReadings(limit) {
+    try {
+        const json = await fetchData('readings?limit=' + limit);
+        if (json.success && json.data) {
+            updateChart(json.data);
+            refreshLatest();
+            document.getElementById('connection-status').className = 'badge bg-success';
+            document.getElementById('connection-status').textContent = 'Connected';
+        }
+    } catch (e) {
+        document.getElementById('connection-status').className = 'badge bg-danger';
+        document.getElementById('connection-status').textContent = 'Disconnected';
+
+        document.getElementById('connection-status').textContent = e.message;
+    }
+}
+ 
+async function loadRange(from, to) {
+    try {
+        const json = await fetchData(
+            'range?from=' + encodeURIComponent(from) +
+            '&to=' + encodeURIComponent(to)
+        );
+        if (json.success && json.data) {
+            updateChart(json.data);
+            refreshLatest();
+        }
+    } catch (e) {
+        const errEl = document.getElementById('date-range-error');
+        errEl.textContent = 'Failed to load data for this range.';
+        errEl.classList.remove('d-none');
+    }
+}
+ 
+async function refreshLatest() {
+    try {
+        const json = await fetchData('latest');
+        if (json.success && json.data) {
+            updateLiveStats([json.data]);
+        }
+    } catch (e) {
+        // Silent fail on live update — connection may be temporarily unavailable
+    }
+}
+ 
+function startAutoRefresh() {
+    if (refreshInterval) clearInterval(refreshInterval);
+    refreshInterval = setInterval(refreshLatest, REFRESH_MS);
+}
+ 
+document.getElementById('btn-1d').addEventListener('click', function () {
+    currentLimit = 24;
+    loadReadings(24);
+});
+ 
+document.getElementById('btn-5d').addEventListener('click', function () {
+    currentLimit = 120;
+    loadReadings(120);
+});
+ 
+document.getElementById('btn-30d').addEventListener('click', function () {
+    currentLimit = 720;
+    loadReadings(720);
+});
+  
+document.getElementById('date-range-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    const errEl = document.getElementById('date-range-error');
+    errEl.classList.add('d-none');
+ 
+    const fromVal = document.getElementById('from-date').value;
+    const toVal = document.getElementById('to-date').value;
+ 
+    if (!fromVal || !toVal) return;
+ 
+    const from = fromVal.replace('T', ' ') + ':00';
+    const to = toVal.replace('T', ' ') + ':00';
+ 
+    loadRange(from, to);
+});
+ 
+loadReadings(24);
+startAutoRefresh();
+</script>
+</body>
+</html>

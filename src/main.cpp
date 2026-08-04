@@ -3,6 +3,7 @@
 #include <chrono>
 #include <format>
 #include <HTTPClient.h>
+#include <Preferences.h>
 #include <string>
 #include <WiFi.h>
 #include <Wire.h>
@@ -15,12 +16,12 @@
 
 INA226 ina226(0x40); // Create an instance of the INA226 class
 
+void readCredentials(std::string&ssid, std::string& password);
 void connectToWifi();
 std::string CurrentTime();
 void initOTA();
 void printSystemTime();
-void postDataToServer(float current, float busVoltage, float shuntVoltage, float power, const std::string& measurementDate);
-void printINA226Values(float current, float busVoltage, float shuntVoltage, float power, const std::string& measurementDate);
+void postDataToServer(float current, float busVoltage, float power, const std::string& measurementDate);
 
 void setup()
 {
@@ -53,7 +54,7 @@ void loop()
   ArduinoOTA.handle(); // Critical: Must run constantly to intercept network files
 #endif
   static unsigned long previousmilliseconds = 0;
-  const long interval = 200;
+  const long interval = 1000;
 
   unsigned long milliseconds = millis();
 
@@ -61,52 +62,61 @@ void loop()
   {
     previousmilliseconds = milliseconds;
 
-    const float powerThreshold = 0.5; // Define a threshold for power change
-    static float previousPower = -1.0; // Store the previous power measurement
     float current = ina226.getCurrent(); // Get current in Amperes
     float power = ina226.getPower(); // Get power in Watts);
     float busVoltage = ina226.getBusVoltage(); // Get current in Amperes
-    float shuntVoltage = ina226.getShuntVoltage(); // Get current in Amperes
     std::string measurementDate = CurrentTime();
 
-    //printINA226Values(current, busVoltage, shuntVoltage, power, measurementDate);
+    if(current < 0.0 || power < 0.0)
+    {
+      current = 0.0; // Ensure current is not negative
+      power = 0.0; // Ensure power is not negative
+    }
 
     if(busVoltage < 1.0)
     {
-      Serial.println("Set LED to Red (255, 0, 0)");
       rgbLedWrite(RGB_BUILTIN, 255, 0, 0);
     }
     else
     {
-      Serial.println("Set LED to Green (255, 0, 0)");
       rgbLedWrite(RGB_BUILTIN, 0, 255, 0);
     }
 
-    Serial.print("Power: ");
-    Serial.println(power, 2);
-
-    Serial.print("Previous power: ");
-    Serial.println(previousPower, 2);
-
-    if(std::abs(power - previousPower) > powerThreshold)
-    {
-      postDataToServer(current, busVoltage, shuntVoltage, power, measurementDate);
-      previousPower = power;
-    }
+    postDataToServer(current, busVoltage, power, measurementDate);
   }
+}
+
+void readCredentials(std::string&ssid, std::string& password)
+{
+  Preferences preferences;
+
+  // Open Preferences with 'credentials' namespace in R/W mode
+  preferences.begin("credentials", false);
+
+  // Read credentials back
+  ssid = preferences.getString("ssid", "").c_str();
+  password = preferences.getString("password", "").c_str();
+
+  Serial.print("Stored SSID: ");
+  Serial.println(ssid.c_str());
+  
+  // Always close the preferences when done
+  preferences.end();
+
 }
 
 void connectToWifi()
 {
-  // Connect to Wi-Fi network
-  const char* ssid = "Magellan";
-  const char* password = "Nort4Sta$";
   const char* ntpServer = "pool.ntp.org";
+
+  std::string ssid;
+  std::string password;
+  readCredentials(ssid, password);
 
   Serial.print("Connecting to Wi-Fi");
 
   WiFi.mode(WIFI_AP_STA);
-  WiFi.begin(ssid, password);
+  WiFi.begin(ssid.c_str(), password.c_str());
 
   while (WiFi.status() != WL_CONNECTED)
   {
@@ -163,7 +173,7 @@ void printSystemTime()
   Serial.println(CurrentTime().c_str());
 }
 
-void postDataToServer(float current, float busVoltage, float shuntVoltage, float power, const std::string& measurementDate)
+void postDataToServer(float current, float busVoltage, float power, const std::string& measurementDate)
 {
   if (WiFi.status() != WL_CONNECTED)
   {
@@ -173,9 +183,8 @@ void postDataToServer(float current, float busVoltage, float shuntVoltage, float
   const char* serverUrl = "http://192.168.50.17/amps/store.php";
   
   // Example: Send data via HTTP POST with JSON
-  //String jsonData = "{\"temperature\":24.5,\"humidity\":60}";
-  std::string jsonData = std::format("{}?current={}&bus_voltage={}&measurement_date={}&shunt_voltage={}&power={}",
-    serverUrl, current, busVoltage, measurementDate, shuntVoltage, power);
+  std::string jsonData = std::format("{}?power={}&current={}&bus_voltage={}&measurement_date={}",
+    serverUrl, power, current, busVoltage, measurementDate);
 
   HTTPClient http;
   http.begin(jsonData.c_str()); // Specify the URL
@@ -195,39 +204,3 @@ void postDataToServer(float current, float busVoltage, float shuntVoltage, float
   
   http.end();  
 }
-
-void printINA226Values(float current, float busVoltage, float shuntVoltage, float power, const std::string& measurementDate)
-{
-  Serial.print("Current: ");
-  Serial.println(current, 2);
-  
-  Serial.print("Power: ");
-  Serial.println(power, 2);
-  
-  Serial.print("Bus Voltage: ");
-  Serial.println(busVoltage, 2);
-
-  Serial.print("Shunt Voltage: ");
-  Serial.println(shuntVoltage, 10);
-
-  Serial.print("Measurement date: ");
-  Serial.println(measurementDate.c_str());
-}
-
-//WITH Flagged AS
-//	( SELECT *, SUM(CASE WHEN power = 0 THEN 1 ELSE 0 END) OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS zero_group FROM Amperage ),
-//Islands AS
-//	( SELECT *, SUM(CASE WHEN power = 0 THEN 0 ELSE 1 END) OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS island_id FROM Flagged ) 
-//SELECT * FROM Islands;
-
-// WITH Flagged AS
-//   ( SELECT *, SUM(CASE WHEN power = 0 THEN 1 ELSE 0 END) OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS zero_group FROM Amperage ), 
-// Islands AS
-//   ( SELECT *, SUM(CASE WHEN power = 0 THEN 0 ELSE 1 END) OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS island_id FROM Flagged )
-// SELECT sum(power) AS power_used,
-// AVG(CASE WHEN power = 0 THEN NULL ELSE bus_voltage END) AS average_voltage,
-// MIN(measurement_date) AS start_time,
-// MAX(measurement_date) AS end_time,
-// zero_group
-// FROM Islands
-// GROUP BY zero_group;
