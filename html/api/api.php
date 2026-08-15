@@ -34,6 +34,7 @@ try {
         'readings' => handleReadings($pdo),
         'range'    => handleRange($pdo),
         'latest'   => handleLatest($pdo),
+        'daily_totals' => handleDailyTotals($pdo),
         default    => throw new \RuntimeException('Unknown endpoint'),
     };
 } catch (\RuntimeException $e) {
@@ -42,6 +43,51 @@ try {
 } catch (\Throwable $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'error' => 'Internal server error']);
+}
+
+function handleDailyTotals(PDO $pdo): void
+{ 
+    $stmt = $pdo->prepare(
+        'WITH Q1 AS(
+            SELECT
+                AVG(power) AS power,
+                AVG(current) AS current,
+                CAST(AVG(bus_voltage) AS DECIMAL(10,2)) AS bus_voltage,
+                DATE_FORMAT(measurement_date, \'%Y-%m-%d %H:00:00\') AS measurement_date
+            FROM usage_by_second
+            GROUP BY DATE_FORMAT(measurement_date, \'%Y-%m-%d %H:00:00\'))
+        SELECT
+            CAST(SUM(power) AS DECIMAL(10,2)) AS power,
+            CAST(SUM(current) AS DECIMAL(10,2)) AS current,
+            CAST(AVG(bus_voltage) AS DECIMAL(10,2)) AS bus_voltage,
+            DATE_FORMAT(measurement_date, \'%Y-%m-%d 00:00:00\') AS measurement_date
+        FROM Q1
+        GROUP BY DATE_FORMAT(measurement_date, \'%Y-%m-%d 00:00:00\')
+        UNION
+            SELECT
+                SUM(power) AS power,
+                SUM(current) AS current,
+                CAST(AVG(bus_voltage) AS DECIMAL(10,2)) AS bus_voltage,
+                DATE_FORMAT(measurement_date, \'%Y-%m-%d 00:00:00\') AS measurement_date
+            FROM usage_by_hour
+            GROUP BY DATE_FORMAT(measurement_date, \'%Y-%m-%d 00:00:00\')
+        ORDER BY DATE_FORMAT(measurement_date, \'%Y-%m-%d 00:00:00\')'
+    );
+
+    $stmt->execute();
+ 
+    $data = $stmt->fetchAll();
+ 
+    echo json_encode([
+        'success' => true,
+        'data'    => $data,
+        'count'   => count($data),
+        'query'   => [
+            'from'  => null,
+            'to'    => null,
+            'limit' => null,
+        ],
+    ]);
 }
 
 function handleReadings(PDO $pdo): void
@@ -59,8 +105,11 @@ function handleReadings(PDO $pdo): void
             FROM usage_by_second
             GROUP BY DATE_FORMAT(measurement_date, \'%Y-%m-%d %H:00:00\')
         UNION
-            SELECT power, current, bus_voltage, measurement_date
-                FROM usage_by_hour
+            SELECT power,
+            current,
+            bus_voltage,
+            DATE_FORMAT(measurement_date, \'%Y-%m-%d %H:00:00\') AS measurement_date
+            FROM usage_by_hour
         ORDER BY measurement_date DESC
         LIMIT :limit'
     );
@@ -110,16 +159,28 @@ function handleRange(PDO $pdo): void
  
     $stmt = $pdo->prepare(
         'SELECT
-            power,
-            current,
-            bus_voltage,
-            measurement_date
-         FROM usage_by_hour
-         WHERE measurement_date BETWEEN :from AND :to
-         ORDER BY measurement_date ASC'
+            CAST(AVG(CASE WHEN current <= 0 THEN 0 ELSE power END) AS DECIMAL(10,2)) AS power,
+            CAST(AVG(CASE WHEN current <= 0 THEN 0 ELSE current END) AS DECIMAL(10,2)) AS current,
+            CAST(AVG(CASE WHEN current <= 0 THEN NULL ELSE bus_voltage END) AS DECIMAL(10,2)) AS bus_voltage,
+            DATE_FORMAT(measurement_date, \'%Y-%m-%d %H:00:00\') AS measurement_date
+            FROM usage_by_second
+            WHERE measurement_date BETWEEN :from AND :to
+            GROUP BY DATE_FORMAT(measurement_date, \'%Y-%m-%d %H:00:00\')
+        UNION
+            SELECT
+                power,
+                current,
+                bus_voltage,
+                DATE_FORMAT(measurement_date, \'%Y-%m-%d %H:00:00\') AS measurement_date
+            FROM usage_by_hour
+            WHERE measurement_date BETWEEN :from1 AND :to1
+        ORDER BY measurement_date ASC'
     );
+
     $stmt->bindValue(':from', $from, PDO::PARAM_STR);
     $stmt->bindValue(':to', $to, PDO::PARAM_STR);
+    $stmt->bindValue(':from1', $from, PDO::PARAM_STR);
+    $stmt->bindValue(':to1', $to, PDO::PARAM_STR);
     $stmt->execute();
  
     $data = $stmt->fetchAll();

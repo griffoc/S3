@@ -108,6 +108,7 @@
                 <button class="btn btn-sm btn-outline-secondary" id="btn-1d">1 Day</button>
                 <button class="btn btn-sm btn-outline-secondary" id="btn-5d">5 Days</button>
                 <button class="btn btn-sm btn-outline-secondary" id="btn-30d">30 Days</button>
+                <button class="btn btn-sm btn-outline-secondary" id="btn-d-totals">Daily Totals</button>
             </div>
         </div>
         <div class="card-body">
@@ -284,7 +285,12 @@ async function fetchData(endpoint) {
     const url = API_BASE + '/' + endpoint;
     const res = await fetch(url);
     if (!res.ok) {
-        throw new Error('API returned ' + res.status);
+        //throw new Error('API returned ' + res.status);
+        // You can parse the error body if the server returns JSON error details
+        const errorBody = await res.json().catch(() => null); 
+        throw new Error(`HTTP Error! Status: ${res.status}`, { 
+            cause: { status: res.status, body: errorBody } 
+        });
     }
     return res.json();
 }
@@ -317,6 +323,23 @@ function updateLiveStats(data) {
     document.getElementById('val-bus-voltage').textContent = parseFloat(last.bus_voltage).toFixed(3);
     document.getElementById('val-measurement-date').textContent = new Date(last.measurement_date + 'Z').toLocaleString();}
  
+async function loadDailyTotals() {
+    try {
+        const json = await fetchData('daily_totals');
+        if (json.success && json.data) {
+            updateChart(json.data);
+            refreshLatest();
+            document.getElementById('connection-status').className = 'badge bg-success';
+            document.getElementById('connection-status').textContent = 'Connected';
+        }
+    } catch (e) {
+        document.getElementById('connection-status').className = 'badge bg-danger';
+        document.getElementById('connection-status').textContent = 'Disconnected';
+
+        document.getElementById('connection-status').textContent = e.message;
+    }
+}
+ 
 async function loadReadings(limit) {
     try {
         const json = await fetchData('readings?limit=' + limit);
@@ -346,7 +369,7 @@ async function loadRange(from, to) {
         }
     } catch (e) {
         const errEl = document.getElementById('date-range-error');
-        errEl.textContent = 'Failed to load data for this range.';
+        errEl.textContent = '123' + e.message + ' - ' + e.cause.status+ ' - ' + e.cause.body.error;//'Failed to load data for this range.';
         errEl.classList.remove('d-none');
     }
 }
@@ -380,6 +403,10 @@ document.getElementById('btn-5d').addEventListener('click', function () {
 document.getElementById('btn-30d').addEventListener('click', function () {
     currentLimit = 720;
     loadReadings(720);
+});
+ 
+document.getElementById('btn-d-totals').addEventListener('click', function () {
+    loadDailyTotals();
 });
   
 document.getElementById('date-range-form').addEventListener('submit', function (e) {
