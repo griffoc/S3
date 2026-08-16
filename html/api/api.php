@@ -35,6 +35,7 @@ try {
         'range'    => handleRange($pdo),
         'latest'   => handleLatest($pdo),
         'daily_totals' => handleDailyTotals($pdo),
+        'hourly_average' => handleHourlyAverage($pdo),
         default    => throw new \RuntimeException('Unknown endpoint'),
     };
 } catch (\RuntimeException $e) {
@@ -210,7 +211,35 @@ function handleLatest(PDO $pdo): void
  
     if ($data === false) {
         echo json_encode([
-            'success' => true,
+            'success' => false,
+            'data'    => null,
+            'count'   => 0,
+        ]);
+        return;
+    }
+ 
+    echo json_encode([
+        'success' => true,
+        'data'    => $data,
+        'count'   => 1,
+    ]);
+}
+
+function handleHourlyAverage(PDO $pdo): void
+{
+    $stmt = $pdo->query(
+        'SELECT
+            CAST(AVG(power) AS DECIMAL(10,2)) AS power_average,
+            CAST(AVG(current) AS DECIMAL(10,2)) AS current_average,
+            CAST(AVG(bus_voltage) AS DECIMAL(10,2)) AS bus_voltage_average
+        FROM usage_by_hour'
+    );
+ 
+    $data = $stmt->fetch();
+ 
+    if ($data === false) {
+        echo json_encode([
+            'success' => false,
             'data'    => null,
             'count'   => 0,
         ]);

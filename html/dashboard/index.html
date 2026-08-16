@@ -20,7 +20,7 @@
         .card-header {
             background: #21262d;
             border-bottom: 1px solid #30363d;
-            color: #58a6ff;
+            color: #8b949e;
             font-weight: 600;
         }
         .btn-primary {
@@ -48,6 +48,9 @@
         .stat-power .value { color: #f85149; }
         .stat-current .value { color: #3fb950; }
         .stat-bus-voltage .value { color: #58a6ff; }
+        .stat-power-average .value { color: #f85149; }
+        .stat-current-average .value { color: #3fb950; }
+        .stat-bus-voltage-average .value { color: #58a6ff; }
         #chart-container {
             position: relative;
             height: 450px;
@@ -74,29 +77,59 @@
         </div>
     </header>
  
-    <div class="row g-3 mb-4" id="live-stats">
-        <div class="col-md-4">
-            <div class="card stats-box stat-power">
-                <div class="label">Power</div>
-                <div class="value" id="val-power">--</div>
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span>Live Usage</span>
+            <div class="label"><div class="value" id="val-measurement-date">--</div></div>
+        </div>
+        <div class="card-body">
+            <div class="row g-3 mb-4" id="live-stats">
+                <div class="col-md-4">
+                    <div class="card stats-box stat-power">
+                        <div class="label">Power</div>
+                        <div class="value" id="val-power">--</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card stats-box stat-current">
+                        <div class="label">Current</div>
+                        <div class="value" id="val-current">--</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card stats-box stat-bus-voltage">
+                        <div class="label">Bus Voltage</div>
+                        <div class="value" id="val-bus-voltage">--</div>
+                    </div>
+                </div>
             </div>
         </div>
-        <div class="col-md-4">
-            <div class="card stats-box stat-current">
-                <div class="label">Current</div>
-                <div class="value" id="val-current">--</div>
-            </div>
+    </div>
+ 
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span>Average Usage</span>
         </div>
-        <div class="col-md-4">
-            <div class="card stats-box stat-bus-voltage">
-                <div class="label">Bus Voltage</div>
-                <div class="value" id="val-bus-voltage">--</div>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card stats-box stat-measurement-date">
-                <div class="label">Measurement Date</div>
-                <div class="value" id="val-measurement-date">--</div>
+        <div class="card-body">
+            <div class="row g-3 mb-4" id="average-stats">
+                <div class="col-md-4">
+                    <div class="card stats-box stat-power-average">
+                        <div class="label">Power Average</div>
+                        <div class="value" id="val-power-average">--</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card stats-box stat-current-average">
+                        <div class="label">Current Average</div>
+                        <div class="value" id="val-current-average">--</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card stats-box stat-bus-voltage-average">
+                        <div class="label">Bus Voltage Average</div>
+                        <div class="value" id="val-bus-voltage-average">--</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -321,7 +354,16 @@ function updateLiveStats(data) {
     document.getElementById('val-power').textContent = parseFloat(last.power).toFixed(3);
     document.getElementById('val-current').textContent = parseFloat(last.current).toFixed(3);
     document.getElementById('val-bus-voltage').textContent = parseFloat(last.bus_voltage).toFixed(3);
-    document.getElementById('val-measurement-date').textContent = new Date(last.measurement_date + 'Z').toLocaleString();}
+    document.getElementById('val-measurement-date').textContent = new Date(last.measurement_date + 'Z').toLocaleString();
+}
+
+function updateHourlyAverage(data) {
+    if (data.length === 0) return;
+    const last = data[data.length - 1];
+    document.getElementById('val-power-average').textContent = parseFloat(last.power_average).toFixed(3);
+    document.getElementById('val-current-average').textContent = parseFloat(last.current_average).toFixed(3);
+    document.getElementById('val-bus-voltage-average').textContent = parseFloat(last.bus_voltage_average).toFixed(3);
+}
  
 async function loadDailyTotals() {
     try {
@@ -369,7 +411,7 @@ async function loadRange(from, to) {
         }
     } catch (e) {
         const errEl = document.getElementById('date-range-error');
-        errEl.textContent = '123' + e.message + ' - ' + e.cause.status+ ' - ' + e.cause.body.error;//'Failed to load data for this range.';
+        errEl.textContent = e.message + ' - ' + e.cause.status+ ' - ' + e.cause.body.error;//'Failed to load data for this range.';
         errEl.classList.remove('d-none');
     }
 }
@@ -380,7 +422,14 @@ async function refreshLatest() {
         if (json.success && json.data) {
             updateLiveStats([json.data]);
         }
+        
+        const hourlyJson = await fetchData('hourly_average');
+        if (hourlyJson.success && hourlyJson.data) {
+            updateHourlyAverage([hourlyJson.data]);
+        }
     } catch (e) {
+            document.getElementById('val-hourly-average').textContent = e.message;//parseFloat(last.power_average).toFixed(3);
+
         // Silent fail on live update — connection may be temporarily unavailable
     }
 }
