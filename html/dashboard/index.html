@@ -328,14 +328,20 @@ async function fetchData(endpoint) {
     return res.json();
 }
  
-function updateChart(data) {
+function updateChart(data, dateOnly = false) {
     const labels = data.map(r => {
         const d = new Date(r.measurement_date + 'Z');
-        return d.toLocaleString("en-US", {
-            timeStyle: "short",
-            dateStyle: "short",
-            hour12: false,
-        });
+        if(dateOnly === true) {
+            return d.toLocaleDateString("en-US");
+        }
+        else
+        {
+            return d.toLocaleString("en-US", {
+                timeStyle: "short",
+                dateStyle: "short",
+                hour12: false,
+            });
+        }
     });
  
     chart.data.labels = labels;
@@ -369,7 +375,7 @@ async function loadDailyTotals() {
     try {
         const json = await fetchData('daily_totals');
         if (json.success && json.data) {
-            updateChart(json.data);
+            updateChart(json.data, true);
             refreshLatest();
             document.getElementById('connection-status').className = 'badge bg-success';
             document.getElementById('connection-status').textContent = 'Connected';
