@@ -18,23 +18,29 @@
 
 #define SDA_PIN 18
 #define SCL_PIN 46
-//#define USE_OTA // Uncomment to enable OTA updates
+#define USE_OTA // Uncomment to enable OTA updates
+// #define TEST_WITHOUT_INA226
+// #define TEST_WITHOUT_UPLOAD
 
 const char* DataFileName = "data.txt"; // Path to the data file on LittleFS
 const char* DataFilePath = "/data.txt"; // Path to the data file on LittleFS
 const char* tempDirectory = "/temp"; // Path to the temporary directory on LittleFS
 
 INA226 ina226(0x40); // Create an instance of the INA226 class
+std::mutex serialPrintMutex;
 
 void readCredentials(std::string&ssid, std::string& password);
 bool connectToWifi();
 std::string CurrentTime();
+std::string generateTimeBasedFilename(const std::string& directory);
 void initOTA();
 void printSystemTime();
 bool postDataToServer(float current, float busVoltage, float power, const std::string& measurementDate);
 bool writeToFile(float current, float busVoltage, float power, const std::string& measurementDate);
 void uploadFileToServer();
 void increaseStackSizeForUploadThread();
+void serialPrint(const char* message, bool newLine = true);
+void serialPrint(int message, bool newLine = true);
 
 void setup()
 {  
@@ -42,25 +48,28 @@ void setup()
   increaseStackSizeForUploadThread();
   connectToWifi();
   LittleFS.begin(true); // Format on fail
-  Serial.println("LittleFS initialized successfully");
-  //uploadFileToServer();
+  serialPrint("LittleFS initialized successfully");
 
 #ifdef USE_OTA
   initOTA();
 #endif
 
+  uploadFileToServer();
+
   // Initialize I2C with the specified ESP32-S3 pins
   Wire.begin(SDA_PIN, SCL_PIN);
   
+#ifndef TEST_WITHOUT_INA226
   //Initialize sensor module
   if(!ina226.begin())
   {
-    Serial.println("INA226 not connected!");
+    serialPrint("INA226 not connected!");
     while(1)
       delay(1000);
   }
 
   ina226.setMaxCurrentShunt(20.0, 0.00375); // Set max current and shunt resistor value
+#endif
 }
 
 void loop()
@@ -77,9 +86,15 @@ void loop()
   {
     previousmilliseconds = milliseconds;
 
+#ifndef TEST_WITHOUT_INA226
     float current = ina226.getCurrent(); // Get current in Amperes
     float power = ina226.getPower(); // Get power in Watts);
     float busVoltage = ina226.getBusVoltage(); // Get current in Amperes
+#else
+    float current = 1.0;
+    float power =  1.0;
+    float busVoltage =  1.0;
+#endif
 
     std::string measurementDate = CurrentTime();
 
@@ -98,14 +113,31 @@ void loop()
       rgbLedWrite(RGB_BUILTIN, 0, 255, 0);
     }
 
+    static bool postToServerFailed = false;
+#ifndef TEST_WITHOUT_UPLOAD
     if(!postDataToServer(current, busVoltage, power, measurementDate))
+#else
+    static int count = 0;
+    if(++count < 10)
+#endif
     {
-      Serial.println("Failed to post data to server!");
       writeToFile(current, busVoltage, power, measurementDate);
+      postToServerFailed = true;
     }
-    else
+    
+    if(postToServerFailed &&
+      connectToWifi())
     {
+#ifdef TEST_WITHOUT_UPLOAD
+    if(count >= 10)
+    {
+#endif
       uploadFileToServer();
+      postToServerFailed = false;
+#ifdef TEST_WITHOUT_UPLOAD
+      count = 0;
+    }
+#endif
     }
   }
 }
@@ -121,8 +153,8 @@ void readCredentials(std::string&ssid, std::string& password)
   ssid = preferences.getString("ssid", "").c_str();
   password = preferences.getString("password", "").c_str();
 
-  Serial.print("Stored SSID: ");
-  Serial.println(ssid.c_str());
+  serialPrint("Stored SSID: ", false);
+  serialPrint(ssid.c_str());
   
   // Always close the preferences when done
   preferences.end();
@@ -141,7 +173,7 @@ bool connectToWifi()
   std::string password;
   readCredentials(ssid, password);
 
-  Serial.print("Connecting to Wi-Fi");
+  serialPrint("Connecting to Wi-Fi", false);
 
   WiFi.mode(WIFI_AP_STA);
   WiFi.begin(ssid.c_str(), password.c_str());
@@ -151,11 +183,11 @@ bool connectToWifi()
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
-    Serial.print(".");
+    serialPrint(".", false);
     retryCount++;
     if (retryCount >= maxRetries)
     {
-      Serial.println("Failed to connect to Wi-Fi!");
+      serialPrint("Failed to connect to Wi-Fi!");
       return false;
     }
   }
@@ -164,22 +196,12 @@ bool connectToWifi()
   // Timezone format: TZ_OFFSET;DST_OFFSET,DST_START,DST_END
   configTime(0, 0, ntpServer); // 0 offset for UTC, adjust for local TZ
 
-  Serial.println(".Connected to Wi-Fi!");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
+  serialPrint(".Connected to Wi-Fi!");
+  serialPrint("IP Address: ", false);
+  serialPrint(WiFi.localIP().toString().c_str());
   printSystemTime(); // Print the current local time
 
   return true;
-}
-
-std::string CurrentTime()
-{
-  return std::format("{:%Y-%m-%d%%20%T}", std::chrono::system_clock::now());
-}
-
-std::string generateTimeBasedFilename(const std::string& directory)
-{
-    return std::format("{}/{:%Y%m%d_%H%M%S_%OS}.txt", directory, std::chrono::system_clock::now());
 }
 
 void initOTA()
@@ -189,8 +211,8 @@ void initOTA()
   ArduinoOTA.setHostname("esp32s3-ota"); // Target network name
   ArduinoOTA.setPassword("pa44word123"); // Optional authentication
 
-  ArduinoOTA.onStart([]() { Serial.println("Start OTA Update"); });
-  ArduinoOTA.onEnd([]() { Serial.println("\nEnd OTA Update"); });
+  ArduinoOTA.onStart([]() { serialPrint("Start OTA Update"); });
+  ArduinoOTA.onEnd([]() { serialPrint("\nEnd OTA Update"); });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
   });
@@ -201,26 +223,11 @@ void initOTA()
   ArduinoOTA.begin();
 }
 
-void printSystemTime()
-{
-  //WTF: getLocalTime must be called so that CurrentTime(), i.e chrono::system_clock::now(), returns
-  //the correct time on the first call. Otherwise, 1970-01-01 00:00:00 is returned on the first few calls.
-  struct tm timeinfo;
-  if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
-    return;
-  }
-
-  Serial.print("SystemTime: ");
-  //Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
-  Serial.println(CurrentTime().c_str());
-}
-
 bool postDataToServer(float current, float busVoltage, float power, const std::string& measurementDate)
 {
   if(!connectToWifi())
   {
-    Serial.println("Failed to connect to Wi-Fi!");
+    serialPrint("Failed to connect to Wi-Fi!");
     return false;
   }
 
@@ -233,17 +240,14 @@ bool postDataToServer(float current, float busVoltage, float power, const std::s
   HTTPClient http;
   http.begin(jsonData.c_str()); // Specify the URL
   
-  Serial.println(jsonData.c_str());
+  serialPrint(jsonData.c_str());
   
   int httpResponseCode = http.GET();
   
-  if (httpResponseCode > 0) {
-    String response = http.getString();
-    Serial.println(httpResponseCode);
-    Serial.println(response);
-  } else {
-    Serial.print("Error on sending POST: ");
-    Serial.println(httpResponseCode);
+  if (httpResponseCode <= 0) {
+    serialPrint("Error on sending POST: ", false);
+    serialPrint(httpResponseCode);
+    return false;
   }
   
   http.end();
@@ -254,17 +258,17 @@ bool postDataToServer(float current, float busVoltage, float power, const std::s
 bool writeToFile(float current, float busVoltage, float power, const std::string& measurementDate)
 {
   //Check if file exists before opening it
-  bool fileExists = LittleFS.exists(DataFilePath);
+  bool isExistingFile = LittleFS.exists(DataFilePath);
 
   File file = LittleFS.open(DataFilePath, "a");
 
   if (!file) 
   {
-    Serial.println("Failed to create/open file for writing");
+    serialPrint("Failed to create/open file for writing");
     return false;
   }
 
-  if(!fileExists) // If the file is new write the header
+  if(!isExistingFile) // If the file is new write the header
   {
     file.println("power,current,busVoltage,measurementDate");
   }
@@ -278,12 +282,13 @@ bool writeToFile(float current, float busVoltage, float power, const std::string
 
 void uploadFileToServer()
 {
-  Serial.println("Attempting to upload file to server...");
+  serialPrint("Attempting to upload file to server...");
   static std::atomic_bool uploadInProgress{false};
   bool filesReadyToUpload = false;
 
   if(uploadInProgress)
   {
+    serialPrint("Upload already processing.");
     return;
   }
 
@@ -320,7 +325,7 @@ void uploadFileToServer()
   {
     uploadInProgress = true;
 
-    Serial.println("Starting upload thread...");
+    serialPrint("Starting upload thread...");
 
     std::jthread([]()
     {
@@ -332,7 +337,7 @@ void uploadFileToServer()
 
       if(!root || !root.isDirectory())
       {
-        Serial.println("No files to upload.");
+        serialPrint("No files to upload.");
         uploadInProgress = false;
         return;
       }
@@ -342,64 +347,26 @@ void uploadFileToServer()
         File file;
         while(file = root.openNextFile())
         {
-          Serial.println(std::format("Uploading file: {}", file.path()).c_str());
-
-          const char* Boundary = "----WebKitFormBoundary4SA2FQldVsXi3jQ";
-
-          if(!connectToWifi())
-          {
-            break; //Cannot upload file if not connected to Wi-Fi
-          }
-          
-          // Construct multipart body manually
-          std::stringstream body;
-          body << std::format("--{}\n", Boundary);
-          body << std::format("Content-Disposition: form-data; name=\"file\"; filename=\"{}\"\n", DataFileName);
-          body << "Content-Type: text/plain\n\n";
-          
-          bool endsWithBoundary = false;
-          size_t totalBytesRead = 0;
-          while (file.available())
-          {
-            if(totalBytesRead >= 0xFFFF) // If the body exceeds 64KB, append the boundary
-            {
-              body << Boundary;
-              endsWithBoundary = true;
-            }
-
-            size_t bytesRead = file.read(reinterpret_cast<uint8_t*>(buffer), readBufSize);
-
-            if(bytesRead > 0)
-            {
-              body.write(buffer, bytesRead);
-              totalBytesRead += bytesRead;
-              endsWithBoundary = false;
-            }
-          }
-            
-          Serial.println(std::format("Read {} bytes from file", totalBytesRead).c_str());
-
-          if(!endsWithBoundary)
-            body << Boundary;
-          body << "--\n";
+          serialPrint(std::format("Uploading file: {}", file.path()).c_str());
 
           HTTPClient http;
           http.begin("http://192.168.50.17/amps/upload.php");
           
-          // Set headers for file upload
-          std::string boundaryHeader = std::format("multipart/form-data; boundary={}", Boundary);
-          http.addHeader("Content-Type", boundaryHeader.c_str());
+          http.addHeader("Content-Type", "application/octet-stream");
 
-          int httpResponseCode = http.POST(body.str().c_str());
-          
+          // Send POST request using the Stream overload and exact content length size
+          int httpResponseCode = http.sendRequest("POST", &file, file.size());
+
           if (httpResponseCode > 0)
           {
             filesToDelete.emplace_back(file.path()); // Mark the file for deletion after successful upload
           }
           else
           {
-            Serial.print("Upload error: ");
-            Serial.println(httpResponseCode);
+            serialPrint("Upload error: ", false);
+            serialPrint(httpResponseCode);
+            String response = http.getString();
+            serialPrint(response.c_str());
           }
 
           file.close();
@@ -409,49 +376,52 @@ void uploadFileToServer()
       }
       catch(const std::exception& e)
       {
-        Serial.print("Uploaded to server failed: ");
-        Serial.println(e.what());
+        serialPrint("Uploaded to server failed: ", false);
+        serialPrint(e.what());
       }
       catch(...)
       {
-        Serial.print("Uploaded to server failed: ");
-        Serial.println("Unknown error");
+        serialPrint("Uploaded to server failed: ", false);
+        serialPrint("Unknown error");
       }
 
       root.close();
 
-      Serial.println("Upload thread finished. Cleaning up files...");
+      serialPrint("Upload thread finished. Cleaning up files...");
 
       try
       {
         for(const auto& filename : filesToDelete)
         {
-          Serial.println(std::format("Deleting file: {}", filename).c_str());
+          serialPrint(std::format("Deleting file: {}", filename).c_str());
           if(!LittleFS.remove(filename.c_str()))
           {
             if(LittleFS.exists(filename.c_str()))
             {
               // WTF! throw?
-              Serial.println("File still exists after deletion attempt");
+              serialPrint("File still exists after deletion attempt");
             }
           }
         }
       }
       catch(const std::exception& e)
       {
-        Serial.print("Error occurred while deleting files: ");
-        Serial.println(e.what());
+        serialPrint("Error occurred while deleting files: ", false);
+        serialPrint(e.what());
       }
       catch(...)
       {
-        Serial.println("Unknown error occurred while deleting files");
+        serialPrint("Unknown error occurred while deleting files");
       }
 
       uploadInProgress = false;
 
-      Serial.println("Upload thread finished.");
+      serialPrint("Upload thread finished.");
     }).detach();
   }
+  else
+    serialPrint("No files to upload.");
+
 }
 
 void increaseStackSizeForUploadThread()
@@ -469,4 +439,47 @@ void increaseStackSizeForUploadThread()
   cfg.thread_name = "upload_thread"; // Optional: helps with debugging
   //Apply config (applies ONLY to the next thread created on this core)
   esp_pthread_set_cfg(&cfg);
+}
+
+void printSystemTime()
+{
+  //WTF: getLocalTime must be called so that CurrentTime(), i.e chrono::system_clock::now(), returns
+  //the correct time on the first call. Otherwise, 1970-01-01 00:00:00 is returned on the first few calls.
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    serialPrint("Failed to obtain time");
+    return;
+  }
+
+  serialPrint("SystemTime: ", false);
+  //serialPrint(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+  serialPrint(CurrentTime().c_str());
+}
+
+std::string CurrentTime()
+{
+  return std::format("{:%Y-%m-%d%%20%T}", std::chrono::system_clock::now());
+}
+
+std::string generateTimeBasedFilename(const std::string& directory)
+{
+    return std::format("{}/{:%Y%m%d_%H%M%S}.txt", directory, std::chrono::system_clock::now());
+}
+
+void serialPrint(const char* message, bool newLine /* = true*/)
+{
+  std::lock_guard<std::mutex> lock(serialPrintMutex);
+  if(newLine)
+    Serial.println(message);
+  else
+    Serial.print(message);
+}
+
+void serialPrint(int message, bool newLine /* = true*/)
+{
+  std::lock_guard<std::mutex> lock(serialPrintMutex);
+  if(newLine)
+    Serial.println(message);
+  else
+    Serial.print(message);
 }
