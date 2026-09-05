@@ -12,11 +12,11 @@ try {
         $file_put = file_put_contents($targetFile, $rawInput . PHP_EOL);
 
         if( $file_put  === false) {
-            http_response_code(400);
+            http_response_code(500);
             echo "Failed to create target file: " . $targetFile;
         }
         else {
-            $rowsAffected = $pdo->exec("LOAD DATA LOCAL INFILE '$targetFile' INTO TABLE FridgeStats.test_usage_by_second
+            $rowsAffected = $pdo->exec("LOAD DATA LOCAL INFILE '$targetFile' INTO TABLE FridgeStats.usage_by_second
                 FIELDS TERMINATED BY ','
                 LINES TERMINATED BY '\n'
                 IGNORE 1 ROWS
@@ -24,12 +24,12 @@ try {
 
             if ($rowsAffected === false) {
                 // Handle error here
-                http_response_code(501);
+                http_response_code(500);
                 $error = $pdo->errorInfo();
                 echo "Query failed: " . $error[0];
             }
             else {
-                unlink($targetFile);
+                // unlink($targetFile);
 
                 http_response_code(200);
                 echo "Data received successfully: " . $rowsAffected . " rows inserted";
@@ -42,6 +42,7 @@ try {
     }
 }
 catch(Exception $e) {
-   echo $e->getMessage();
+    http_response_code(500);
+    echo $e->getMessage();
 }
 ?>

@@ -2,6 +2,7 @@
 #include <atomic>
 #include <chrono>
 #include <format>
+#include <future>
 #include <iostream>
 #include <random>
 #include <string>
@@ -19,14 +20,18 @@
 #define SDA_PIN 18
 #define SCL_PIN 46
 #define USE_OTA // Uncomment to enable OTA updates
-// #define TEST_WITHOUT_INA226
-// #define TEST_WITHOUT_UPLOAD
+//#define TEST_WITHOUT_INA226
+//#define TEST_WITHOUT_UPLOAD
+
+using namespace std::chrono_literals;
 
 const char* DataFileName = "data.txt"; // Path to the data file on LittleFS
 const char* DataFilePath = "/data.txt"; // Path to the data file on LittleFS
 const char* tempDirectory = "/temp"; // Path to the temporary directory on LittleFS
 
+#ifndef TEST_WITHOUT_INA226
 INA226 ina226(0x40); // Create an instance of the INA226 class
+#endif
 std::mutex serialPrintMutex;
 
 void readCredentials(std::string&ssid, std::string& password);
@@ -44,7 +49,7 @@ void serialPrint(int message, bool newLine = true);
 
 void setup()
 {  
-  Serial.begin(115200);
+  Serial.begin(921600);
   increaseStackSizeForUploadThread();
   connectToWifi();
   LittleFS.begin(true); // Format on fail
@@ -114,12 +119,7 @@ void loop()
     }
 
     static bool postToServerFailed = false;
-#ifndef TEST_WITHOUT_UPLOAD
     if(!postDataToServer(current, busVoltage, power, measurementDate))
-#else
-    static int count = 0;
-    if(++count < 10)
-#endif
     {
       writeToFile(current, busVoltage, power, measurementDate);
       postToServerFailed = true;
@@ -129,7 +129,8 @@ void loop()
       connectToWifi())
     {
 #ifdef TEST_WITHOUT_UPLOAD
-    if(count >= 10)
+    static int count = 0;
+    if(++count >= 10)
     {
 #endif
       uploadFileToServer();
@@ -225,6 +226,10 @@ void initOTA()
 
 bool postDataToServer(float current, float busVoltage, float power, const std::string& measurementDate)
 {
+#ifdef TEST_WITHOUT_UPLOAD
+  return false; // Skip actual upload during testing
+#endif
+
   if(!connectToWifi())
   {
     serialPrint("Failed to connect to Wi-Fi!");
@@ -239,8 +244,6 @@ bool postDataToServer(float current, float busVoltage, float power, const std::s
 
   HTTPClient http;
   http.begin(jsonData.c_str()); // Specify the URL
-  
-  serialPrint(jsonData.c_str());
   
   int httpResponseCode = http.GET();
   
@@ -282,13 +285,11 @@ bool writeToFile(float current, float busVoltage, float power, const std::string
 
 void uploadFileToServer()
 {
-  serialPrint("Attempting to upload file to server...");
   static std::atomic_bool uploadInProgress{false};
   bool filesReadyToUpload = false;
 
   if(uploadInProgress)
   {
-    serialPrint("Upload already processing.");
     return;
   }
 
@@ -315,29 +316,33 @@ void uploadFileToServer()
     if(root && root.isDirectory())
     {
       File file = root.openNextFile();
-      filesReadyToUpload = file ? true : false;
-      file.close();
+      if(file)
+      {
+        filesReadyToUpload = true;
+        file.close();
+      }
+
       root.close();
     }
   }
 
   if(filesReadyToUpload)
   {
-    uploadInProgress = true;
-
-    serialPrint("Starting upload thread...");
-
-    std::jthread([]()
+    auto uploadHandler = [](std::promise<void> &uploadInProgressPromise)
     {
-      const size_t readBufSize = 0x7FF;
-      char buffer[readBufSize] = {0};
       std::vector<std::string> filesToDelete; // Store the names of files to delete after successful upload
+
+      uploadInProgress = true;
+
+      uploadInProgressPromise.set_value(); // Notify that the upload thread has started
 
       File root = LittleFS.open(tempDirectory);
 
       if(!root || !root.isDirectory())
       {
-        serialPrint("No files to upload.");
+        if(root)
+          root.close();
+
         uploadInProgress = false;
         return;
       }
@@ -347,8 +352,6 @@ void uploadFileToServer()
         File file;
         while(file = root.openNextFile())
         {
-          serialPrint(std::format("Uploading file: {}", file.path()).c_str());
-
           HTTPClient http;
           http.begin("http://192.168.50.17/amps/upload.php");
           
@@ -357,16 +360,14 @@ void uploadFileToServer()
           // Send POST request using the Stream overload and exact content length size
           int httpResponseCode = http.sendRequest("POST", &file, file.size());
 
-          if (httpResponseCode > 0)
+          if (httpResponseCode == 200)
           {
             filesToDelete.emplace_back(file.path()); // Mark the file for deletion after successful upload
           }
           else
           {
-            serialPrint("Upload error: ", false);
-            serialPrint(httpResponseCode);
             String response = http.getString();
-            serialPrint(response.c_str());
+            serialPrint(std::format("Upload error: {}\n{}", httpResponseCode, response.c_str()).c_str());
           }
 
           file.close();
@@ -376,38 +377,23 @@ void uploadFileToServer()
       }
       catch(const std::exception& e)
       {
-        serialPrint("Uploaded to server failed: ", false);
-        serialPrint(e.what());
+        serialPrint(std::format("Uploaded to server failed: {}", e.what()).c_str());
       }
       catch(...)
       {
-        serialPrint("Uploaded to server failed: ", false);
-        serialPrint("Unknown error");
+        serialPrint("Uploaded to server failed: Unknown error");
       }
 
       root.close();
 
-      serialPrint("Upload thread finished. Cleaning up files...");
-
       try
       {
         for(const auto& filename : filesToDelete)
-        {
-          serialPrint(std::format("Deleting file: {}", filename).c_str());
-          if(!LittleFS.remove(filename.c_str()))
-          {
-            if(LittleFS.exists(filename.c_str()))
-            {
-              // WTF! throw?
-              serialPrint("File still exists after deletion attempt");
-            }
-          }
-        }
+          LittleFS.remove(filename.c_str());
       }
       catch(const std::exception& e)
       {
-        serialPrint("Error occurred while deleting files: ", false);
-        serialPrint(e.what());
+        serialPrint(std::format("Error occurred while deleting files: {}", e.what()).c_str());
       }
       catch(...)
       {
@@ -415,13 +401,25 @@ void uploadFileToServer()
       }
 
       uploadInProgress = false;
+    };
 
-      serialPrint("Upload thread finished.");
-    }).detach();
+    try
+    {
+      serialPrint("Starting upload thread...");
+
+      std::promise<void> uploadInProgressPromise;
+      auto uploadInProgressFuture = uploadInProgressPromise.get_future();
+
+      std::jthread(uploadHandler, std::ref(uploadInProgressPromise)).detach(); // Start the upload thread and detach it
+      uploadInProgressFuture.get(); // Wait for the upload thread to start
+    }
+    catch(const std::exception& e)
+    {
+      uploadInProgress = false;
+      serialPrint("Error occurred while waiting for upload thread: ", false);
+      serialPrint(e.what());
+    }
   }
-  else
-    serialPrint("No files to upload.");
-
 }
 
 void increaseStackSizeForUploadThread()
@@ -458,7 +456,7 @@ void printSystemTime()
 
 std::string CurrentTime()
 {
-  return std::format("{:%Y-%m-%d%%20%T}", std::chrono::system_clock::now());
+  return std::format("{:%Y-%m-%d %T}", std::chrono::system_clock::now());
 }
 
 std::string generateTimeBasedFilename(const std::string& directory)
