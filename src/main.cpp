@@ -112,7 +112,7 @@ void loop()
 #endif
 
     std::string measurementDate = CurrentTime();
-    measurementDate = std::regex_replace(measurementDate, std::regex(" "), "%20");
+    std::string htmlMeasurementDate = std::regex_replace(measurementDate, std::regex(" "), "%20");
 
     if(current < 0.0 || power < 0.0)
     {
@@ -121,7 +121,7 @@ void loop()
     }
 
     static bool postToServerFailed = false;
-    if(!postDataToServer(current, busVoltage, power, measurementDate))
+    if(!postDataToServer(current, busVoltage, power, htmlMeasurementDate))
     {
       writeToFile(current, busVoltage, power, measurementDate);
       postToServerFailed = true;
