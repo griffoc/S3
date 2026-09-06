@@ -34,6 +34,8 @@ const char* tempDirectory = "/temp"; // Path to the temporary directory on Littl
 INA226 ina226(0x40); // Create an instance of the INA226 class
 #endif
 std::mutex serialPrintMutex;
+std::atomic_bool lastUploadFailed{false};
+
 
 void readCredentials(std::string&ssid, std::string& password);
 bool connectToWifi(bool fromSetup = false);
@@ -120,15 +122,11 @@ void loop()
       power = 0.0; // Ensure power is not negative
     }
 
-    static bool postToServerFailed = false;
-    if(!postDataToServer(current, busVoltage, power, htmlMeasurementDate))
-    {
+    bool postToServerSuccess = postDataToServer(current, busVoltage, power, htmlMeasurementDate);
+    if(!postToServerSuccess)
       writeToFile(current, busVoltage, power, measurementDate);
-      postToServerFailed = true;
-    }
     
-    if(postToServerFailed &&
-      connectToWifi())
+    if(!postToServerSuccess || lastUploadFailed)
     {
 #ifdef TEST_WITHOUT_UPLOAD
     static int count = 0;
@@ -136,7 +134,6 @@ void loop()
     {
 #endif
       uploadFileToServer();
-      postToServerFailed = false;
 #ifdef TEST_WITHOUT_UPLOAD
       count = 0;
     }
@@ -374,7 +371,6 @@ void uploadFileToServer()
         {
           HTTPClient http;
           http.begin("http://192.168.50.17/amps/upload.php");
-          
           http.addHeader("Content-Type", "application/octet-stream");
 
           // Send POST request using the Stream overload and exact content length size
@@ -383,9 +379,11 @@ void uploadFileToServer()
           if (httpResponseCode == 200)
           {
             filesToDelete.emplace_back(file.path()); // Mark the file for deletion after successful upload
+            lastUploadFailed = false;
           }
           else
           {
+            lastUploadFailed = true;
             String response = http.getString();
             serialPrint(std::format("Upload error: {}\n{}", httpResponseCode, response.c_str()).c_str());
           }
@@ -397,28 +395,19 @@ void uploadFileToServer()
       }
       catch(const std::exception& e)
       {
+        lastUploadFailed = true;
         serialPrint(std::format("Uploaded to server failed: {}", e.what()).c_str());
       }
       catch(...)
       {
+        lastUploadFailed = true;
         serialPrint("Uploaded to server failed: Unknown error");
       }
 
       root.close();
 
-      try
-      {
-        for(const auto& filename : filesToDelete)
-          LittleFS.remove(filename.c_str());
-      }
-      catch(const std::exception& e)
-      {
-        serialPrint(std::format("Error occurred while deleting files: {}", e.what()).c_str());
-      }
-      catch(...)
-      {
-        serialPrint("Unknown error occurred while deleting files");
-      }
+      for(const auto& filename : filesToDelete)
+        LittleFS.remove(filename.c_str());
 
       uploadInProgress = false;
     };
