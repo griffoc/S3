@@ -5,6 +5,7 @@
 #include <future>
 #include <iostream>
 #include <random>
+#include <regex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -35,7 +36,7 @@ INA226 ina226(0x40); // Create an instance of the INA226 class
 std::mutex serialPrintMutex;
 
 void readCredentials(std::string&ssid, std::string& password);
-bool connectToWifi();
+bool connectToWifi(bool fromSetup = false);
 std::string CurrentTime();
 std::string generateTimeBasedFilename(const std::string& directory);
 void initOTA();
@@ -51,7 +52,7 @@ void setup()
 {  
   Serial.begin(921600);
   increaseStackSizeForUploadThread();
-  connectToWifi();
+  connectToWifi(true);
   LittleFS.begin(true); // Format on fail
   serialPrint("LittleFS initialized successfully");
 
@@ -91,10 +92,19 @@ void loop()
   {
     previousmilliseconds = milliseconds;
 
+  rgbLedWrite(RGB_BUILTIN, 0, 255, 0);  //Assume all good green LED
+
 #ifndef TEST_WITHOUT_INA226
-    float current = ina226.getCurrent(); // Get current in Amperes
-    float power = ina226.getPower(); // Get power in Watts);
-    float busVoltage = ina226.getBusVoltage(); // Get current in Amperes
+  if(!ina226.isConnected())
+  {
+    serialPrint("INA226 not connected!");
+    rgbLedWrite(RGB_BUILTIN, 255, 0, 0);
+    return; // Exit the loop if INA226 is not connected
+  }
+
+  float current = ina226.getCurrent(); // Get current in Amperes
+  float power = ina226.getPower(); // Get power in Watts);
+  float busVoltage = ina226.getBusVoltage(); // Get current in Amperes
 #else
     float current = 1.0;
     float power =  1.0;
@@ -102,20 +112,12 @@ void loop()
 #endif
 
     std::string measurementDate = CurrentTime();
+    measurementDate = std::regex_replace(measurementDate, std::regex(" "), "%20");
 
     if(current < 0.0 || power < 0.0)
     {
       current = 0.0; // Ensure current is not negative
       power = 0.0; // Ensure power is not negative
-    }
-
-    if(busVoltage < 1.0)
-    {
-      rgbLedWrite(RGB_BUILTIN, 255, 0, 0);
-    }
-    else
-    {
-      rgbLedWrite(RGB_BUILTIN, 0, 255, 0);
     }
 
     static bool postToServerFailed = false;
@@ -161,14 +163,13 @@ void readCredentials(std::string&ssid, std::string& password)
   preferences.end();
 }
 
-bool connectToWifi()
+bool connectToWifi(bool fromSetup /*= false*/)
 {
   if (WiFi.status() == WL_CONNECTED)
   {
+    rgbLedWrite(RGB_BUILTIN, 0, 255, 0);
     return true;
   }
-
-  const char* ntpServer = "pool.ntp.org";
 
   std::string ssid;
   std::string password;
@@ -179,28 +180,42 @@ bool connectToWifi()
   WiFi.mode(WIFI_AP_STA);
   WiFi.begin(ssid.c_str(), password.c_str());
 
-  const int maxRetries = 20; // Maximum number of retries
+  const int maxRetries = 4; // Maximum number of retries
   int retryCount = 0;
   while (WiFi.status() != WL_CONNECTED)
   {
+    rgbLedWrite(RGB_BUILTIN, 255, 255, 0);
     delay(500);
+    rgbLedWrite(RGB_BUILTIN, 0, 0, 0);
+
     serialPrint(".", false);
-    retryCount++;
-    if (retryCount >= maxRetries)
+
+    if(fromSetup)
+      continue; //Continue indefinitely if called from setup()
+    else if(++retryCount <= maxRetries)
     {
       serialPrint("Failed to connect to Wi-Fi!");
+      rgbLedWrite(RGB_BUILTIN, 255, 0, 0);
       return false;
     }
   }
 
-  // Set timezone and NTP server
-  // Timezone format: TZ_OFFSET;DST_OFFSET,DST_START,DST_END
-  configTime(0, 0, ntpServer); // 0 offset for UTC, adjust for local TZ
-
   serialPrint(".Connected to Wi-Fi!");
   serialPrint("IP Address: ", false);
   serialPrint(WiFi.localIP().toString().c_str());
-  printSystemTime(); // Print the current local time
+
+  if(fromSetup)
+  {
+    const char* ntpServer = "pool.ntp.org";
+
+    // Set timezone and NTP server
+    // Timezone format: TZ_OFFSET;DST_OFFSET,DST_START,DST_END
+    configTime(0, 0, ntpServer); // 0 offset for UTC, adjust for local TZ
+
+    printSystemTime(); // Print the current local time
+  }
+
+  rgbLedWrite(RGB_BUILTIN, 0, 255, 0);
 
   return true;
 }
@@ -230,10 +245,11 @@ bool postDataToServer(float current, float busVoltage, float power, const std::s
   return false; // Skip actual upload during testing
 #endif
 
+  bool retVal = false;
+  
   if(!connectToWifi())
   {
-    serialPrint("Failed to connect to Wi-Fi!");
-    return false;
+    return retVal;
   }
 
   const char* serverUrl = "http://192.168.50.17/amps/store.php";
@@ -243,19 +259,22 @@ bool postDataToServer(float current, float busVoltage, float power, const std::s
     serverUrl, power, current, busVoltage, measurementDate);
 
   HTTPClient http;
-  http.begin(jsonData.c_str()); // Specify the URL
-  
-  int httpResponseCode = http.GET();
-  
-  if (httpResponseCode <= 0) {
-    serialPrint("Error on sending POST: ", false);
-    serialPrint(httpResponseCode);
-    return false;
+  if(http.begin(jsonData.c_str()))
+  {
+    int httpResponseCode = http.GET();
+    
+    if (httpResponseCode <= 0) {
+      serialPrint("Error on sending POST: ", false);
+      serialPrint(httpResponseCode);
+      retVal = false;
+    }
+    else
+      retVal = true;
   }
   
   http.end();
 
-  return true;
+  return retVal;
 }
 
 bool writeToFile(float current, float busVoltage, float power, const std::string& measurementDate)
@@ -288,7 +307,8 @@ void uploadFileToServer()
   static std::atomic_bool uploadInProgress{false};
   bool filesReadyToUpload = false;
 
-  if(uploadInProgress)
+  if(uploadInProgress ||
+    !connectToWifi())
   {
     return;
   }
