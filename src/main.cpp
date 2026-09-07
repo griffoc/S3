@@ -29,11 +29,13 @@ using namespace std::chrono_literals;
 const char* DataFileName = "data.txt"; // Path to the data file on LittleFS
 const char* DataFilePath = "/data.txt"; // Path to the data file on LittleFS
 const char* tempDirectory = "/temp"; // Path to the temporary directory on LittleFS
+std::atomic<unsigned long> connectionStartTime{0};
 
 #ifndef TEST_WITHOUT_INA226
 INA226 ina226(0x40); // Create an instance of the INA226 class
 #endif
 std::mutex serialPrintMutex;
+std::mutex connectToWifiMutex;
 std::atomic_bool lastUploadFailed{false};
 
 
@@ -62,7 +64,7 @@ void setup()
   initOTA();
 #endif
 
-  uploadFileToServer();
+  lastUploadFailed = true;
 
   // Initialize I2C with the specified ESP32-S3 pins
   Wire.begin(SDA_PIN, SCL_PIN);
@@ -114,7 +116,7 @@ void loop()
 #endif
 
     std::string measurementDate = CurrentTime();
-    std::string htmlMeasurementDate = std::regex_replace(measurementDate, std::regex(" "), "%20");
+    std::string urlMeasurementDate = std::regex_replace(measurementDate, std::regex(" "), "%20");
 
     if(current < 0.0 || power < 0.0)
     {
@@ -122,22 +124,33 @@ void loop()
       power = 0.0; // Ensure power is not negative
     }
 
-    bool postToServerSuccess = postDataToServer(current, busVoltage, power, htmlMeasurementDate);
-    if(!postToServerSuccess)
+    unsigned long minutesConnected = (millis() - connectionStartTime) / 60000;
+    if(!connectToWifi() || minutesConnected < 3)
+    {
       writeToFile(current, busVoltage, power, measurementDate);
-    
-    if(!postToServerSuccess || lastUploadFailed)
-    {
-#ifdef TEST_WITHOUT_UPLOAD
-    static int count = 0;
-    if(++count >= 10)
-    {
-#endif
-      uploadFileToServer();
-#ifdef TEST_WITHOUT_UPLOAD
-      count = 0;
+      lastUploadFailed = true;
     }
-#endif
+    else
+    {
+      bool postToServerSuccess = postDataToServer(current, busVoltage, power, urlMeasurementDate);
+      if(!postToServerSuccess)
+        writeToFile(current, busVoltage, power, measurementDate);
+      
+      if(!postToServerSuccess || lastUploadFailed)
+      {
+  #ifdef TEST_WITHOUT_UPLOAD
+      static int count = 0;
+      if(++count >= 10)
+      {
+  #endif
+
+        uploadFileToServer();
+
+  #ifdef TEST_WITHOUT_UPLOAD
+        count = 0;
+      }
+  #endif
+      }
     }
   }
 }
@@ -162,11 +175,15 @@ void readCredentials(std::string&ssid, std::string& password)
 
 bool connectToWifi(bool fromSetup /*= false*/)
 {
+  std::lock_guard<std::mutex> lock(connectToWifiMutex);
+
   if (WiFi.status() == WL_CONNECTED)
   {
     rgbLedWrite(RGB_BUILTIN, 0, 255, 0);
     return true;
   }
+
+  connectionStartTime = 0;
 
   std::string ssid;
   std::string password;
@@ -211,6 +228,8 @@ bool connectToWifi(bool fromSetup /*= false*/)
 
     printSystemTime(); // Print the current local time
   }
+
+  connectionStartTime = millis();
 
   rgbLedWrite(RGB_BUILTIN, 0, 255, 0);
 
@@ -292,7 +311,7 @@ bool writeToFile(float current, float busVoltage, float power, const std::string
     file.println("power,current,busVoltage,measurementDate");
   }
 
-  std::string dataLine = std::format("{:.2f},{:.2f},{:.2f},{}\n", current, busVoltage, power, measurementDate);
+  std::string dataLine = std::format("{:.2f},{:.2f},{:.2f},{}\n", power, current, busVoltage, measurementDate);
   file.print(dataLine.c_str());
   file.close();
 
@@ -304,15 +323,23 @@ void uploadFileToServer()
   static std::atomic_bool uploadInProgress{false};
   bool filesReadyToUpload = false;
 
-  if(uploadInProgress ||
-    !connectToWifi())
+  if(uploadInProgress)
   {
+    serialPrint("Upload already in progress, skipping this attempt.");
+    return;
+  }
+  else if(!connectToWifi())
+  {
+    serialPrint("Failed to connect to Wi-Fi, skipping upload attempt.");
+    lastUploadFailed = true;
     return;
   }
 
   bool dataFileExists = LittleFS.exists(DataFilePath);
   if(dataFileExists)
   {
+    serialPrint("Data file exists, preparing for upload...");
+
     LittleFS.mkdir(tempDirectory); // Create a temporary directory to hold the file during upload
 
     std::string tempFilename = generateTimeBasedFilename(tempDirectory);
@@ -342,6 +369,8 @@ void uploadFileToServer()
       root.close();
     }
   }
+
+  serialPrint(std::format("Files ready to upload: {}", filesReadyToUpload ? "Yes" : "No").c_str());
 
   if(filesReadyToUpload)
   {
@@ -425,6 +454,8 @@ void uploadFileToServer()
     catch(const std::exception& e)
     {
       uploadInProgress = false;
+      lastUploadFailed = true;
+
       serialPrint("Error occurred while waiting for upload thread: ", false);
       serialPrint(e.what());
     }
