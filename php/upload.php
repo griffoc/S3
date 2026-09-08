@@ -29,7 +29,7 @@ try {
                 echo "Query failed: " . $error[0];
             }
             else {
-                // unlink($targetFile);
+                unlink($targetFile);
 
                 http_response_code(200);
                 echo "Data received successfully: " . $rowsAffected . " rows inserted";
