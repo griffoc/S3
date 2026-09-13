@@ -9,7 +9,7 @@ try {
         $uniqueName = uniqid() . '.txt';
         $targetFile = $targetDir . $uniqueName;
 
-        $file_put = file_put_contents($targetFile, $rawInput . PHP_EOL);
+        $file_put = file_put_contents($targetFile, $rawInput);
 
         if( $file_put  === false) {
             http_response_code(500);
