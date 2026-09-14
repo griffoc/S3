@@ -36,6 +36,7 @@ INA226 ina226(0x40); // Create an instance of the INA226 class
 #endif
 
 const int MaxRecordsPerUploadFile = 300; // Maximum number of records per file
+std::jthread uploadThread;
 std::condition_variable uploadCondition;
 std::mutex filesToUploadMutex;
 
@@ -81,7 +82,7 @@ void setup()
   ina226.setMaxCurrentShunt(20.0, 0.00375); // Set max current and shunt resistor value
 #endif
 
-  std::jthread(uploadFileToServer).detach(); // Start the upload thread
+  uploadThread = std::jthread(uploadFileToServer);
   uploadCondition.notify_one();
 }
 
@@ -266,6 +267,9 @@ bool writeToFile( float power, float current, float busVoltage, const std::strin
       LittleFS.rename(DataFilePath, tempFilename.c_str()); // Rename the file to avoid conflicts during upload
     }
   
+    if(!uploadThread.joinable())
+      uploadThread = std::jthread(uploadFileToServer);  //Start a new thread if the previous one has failed
+
     uploadCondition.notify_one(); // Notify the upload thread to upload files to server
     recordCount = 0; // Reset the record count for the new file
   }
