@@ -186,6 +186,7 @@ const chart = new Chart(document.getElementById('fridge-stats-chart'), {
         datasets: [
             {
                 label: 'Power',
+                unit: 'W',
                 data: [],
                 borderColor: '#f85149',
                 backgroundColor: 'rgba(248, 81, 73, 0.1)',
@@ -197,6 +198,7 @@ const chart = new Chart(document.getElementById('fridge-stats-chart'), {
             },
             {
                 label: 'Current',
+                unit: 'A',
                 data: [],
                 borderColor: '#3fb950',
                 backgroundColor: 'rgba(63, 185, 80, 0.1)',
@@ -208,6 +210,7 @@ const chart = new Chart(document.getElementById('fridge-stats-chart'), {
             },
             {
                 label: 'Bus Voltage',
+                unit: 'V',
                 data: [],
                 borderColor: '#58a6ff',
                 backgroundColor: 'rgba(88, 166, 255, 0.1)',
@@ -246,7 +249,7 @@ const chart = new Chart(document.getElementById('fridge-stats-chart'), {
                 padding: 10,
                 callbacks: {
                     label: function (ctx) {
-                        return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(3) + ' g';
+                        return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(3) + ' ' + ctx.dataset.unit;
                     },
                 },
             },
